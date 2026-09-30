@@ -1,0 +1,199 @@
+use sakila;
+-- Which customers have spent above the average total payment amount? (subquery in WHERE with AVG)
+
+SELECT 
+    customer_id,
+    SUM(amount) AS total_payment
+FROM payment
+GROUP BY customer_id
+HAVING SUM(amount) > (
+    SELECT AVG(total_payment)
+    FROM (
+        SELECT 
+            customer_id,
+            SUM(amount) AS total_payment
+        FROM payment
+        GROUP BY customer_id
+    ) AS customer_totals
+);
+
+-- What are the top 10 most rented films, and how does each compare to the overall average rental count? (correlated subquery)
+
+SELECT
+    f.title,
+    COUNT(r.rental_id) AS rental_count,
+
+    (
+        SELECT AVG(film_rental_count)
+        FROM (
+            SELECT COUNT(r2.rental_id) AS film_rental_count
+            FROM film f2
+            JOIN inventory i2
+                ON f2.film_id = i2.film_id
+            JOIN rental r2
+                ON i2.inventory_id = r2.inventory_id
+            GROUP BY f2.film_id
+        ) AS film_counts
+    ) AS overall_average,
+
+    CASE
+        WHEN COUNT(r.rental_id) >
+            (
+                SELECT AVG(film_rental_count)
+                FROM (
+                    SELECT COUNT(r3.rental_id) AS film_rental_count
+                    FROM film f3
+                    JOIN inventory i3
+                        ON f3.film_id = i3.film_id
+                    JOIN rental r3
+                        ON i3.inventory_id = r3.inventory_id
+                    GROUP BY f3.film_id
+                ) AS film_counts2
+            )
+        THEN 'Above Average'
+        ELSE 'Below Average'
+    END AS comparison
+
+FROM film f
+JOIN inventory i
+    ON f.film_id = i.film_id
+JOIN rental r
+    ON i.inventory_id = r.inventory_id
+
+GROUP BY f.film_id, f.title
+ORDER BY rental_count DESC
+LIMIT 10;
+
+-- Which films have never been rented? (NOT IN / NOT EXISTS subquery)
+SELECT
+    f.film_id,
+    f.title
+FROM film f
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM inventory i
+    JOIN rental r
+        ON i.inventory_id = r.inventory_id
+    WHERE i.film_id = f.film_id
+);
+
+-- Which customers rented more films than the average customer in their store? (nested subquery with GROUP BY)
+
+SELECT
+    c.customer_id,
+    c.first_name,
+    c.last_name,
+    c.store_id,
+    COUNT(r.rental_id) AS rental_count
+FROM customer c
+JOIN rental r
+    ON c.customer_id = r.customer_id
+GROUP BY
+    c.customer_id,
+    c.first_name,
+    c.last_name,
+    c.store_id
+HAVING COUNT(r.rental_id) > (
+    SELECT AVG(customer_rental_count)
+    FROM (
+        SELECT
+            c2.customer_id,
+            c2.store_id,
+            COUNT(r2.rental_id) AS customer_rental_count
+        FROM customer c2
+        JOIN rental r2
+            ON c2.customer_id = r2.customer_id
+        WHERE c2.store_id = c.store_id
+        GROUP BY c2.customer_id, c2.store_id
+    ) AS store_customer_avg
+);
+
+--  What is the revenue contribution of each film category compared to total store revenue? (subquery in FROM/derived table)
+
+SELECT
+    category_revenue.category_name,
+    category_revenue.category_revenue,
+    total_revenue.total_store_revenue,
+    ROUND(
+        (category_revenue.category_revenue / total_revenue.total_store_revenue) * 100,
+        2
+    ) AS revenue_contribution_percentage
+FROM
+    (
+        SELECT
+            c.name AS category_name,
+            SUM(p.amount) AS category_revenue
+        FROM category c
+        JOIN film_category fc
+            ON c.category_id = fc.category_id
+        JOIN inventory i
+            ON fc.film_id = i.film_id
+        JOIN rental r
+            ON i.inventory_id = r.inventory_id
+        JOIN payment p
+            ON r.rental_id = p.rental_id
+        GROUP BY c.category_id, c.name
+    ) AS category_revenue
+CROSS JOIN
+    (
+        SELECT
+            SUM(amount) AS total_store_revenue
+        FROM payment
+    ) AS total_revenue
+ORDER BY revenue_contribution_percentage DESC;
+
+-- Which staff member processed the highest number of transactions above the average staff workload?
+
+SELECT
+    s.staff_id,
+    s.first_name,
+    s.last_name,
+    COUNT(p.payment_id) AS transaction_count
+FROM staff s
+JOIN payment p
+    ON s.staff_id = p.staff_id
+GROUP BY
+    s.staff_id,
+    s.first_name,
+    s.last_name
+HAVING COUNT(p.payment_id) > (
+    SELECT AVG(staff_transaction_count)
+    FROM (
+        SELECT
+            staff_id,
+            COUNT(payment_id) AS staff_transaction_count
+        FROM payment
+        GROUP BY staff_id
+    ) AS staff_workload
+)
+ORDER BY transaction_count DESC
+LIMIT 1;
+
+-- What is the customer lifetime value ranking using a subquery-based rank calculation?
+SELECT
+    c.customer_id,
+    c.first_name,
+    c.last_name,
+    customer_value.total_spent,
+    (
+        SELECT COUNT(*)
+        FROM (
+            SELECT
+                customer_id,
+                SUM(amount) AS total_spent
+            FROM payment
+            GROUP BY customer_id
+        ) AS other_customers
+        WHERE other_customers.total_spent > customer_value.total_spent
+    ) + 1 AS lifetime_value_rank
+FROM customer c
+JOIN (
+    SELECT
+        customer_id,
+        SUM(amount) AS total_spent
+    FROM payment
+    GROUP BY customer_id
+) AS customer_value
+    ON c.customer_id = customer_value.customer_id
+ORDER BY lifetime_value_rank;
+
